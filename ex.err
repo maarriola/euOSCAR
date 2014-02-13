@@ -1,0 +1,19 @@
+/home/matt/Documents/code/eu/euOSCAR/aimbot/bot.ex:2
+<0052>:: can't find 'oscar.e' in any of ...
+	/home/matt/Documents/code/eu/euOSCAR/aimbot
+	/home/matt/Documents/code/eu/euOSCAR/aimbot/bot.ex
+	/usr/share/euphoria
+
+include oscar.e
+               ^
+
+
+--- Defined Words ---
+EU4
+EU4_0
+EU4_0_5
+CONSOLE
+UNIX
+LINUX
+EUI
+-------------------

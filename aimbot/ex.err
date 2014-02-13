@@ -1,0 +1,17 @@
+/home/matt/Documents/code/eu/euOSCAR/aimbot/TSDebug.e:289
+<0074>:: Errors resolving the following references:
+	'db_current' (TSDebug.e:289) has not been declared.
+
+            prev_database_name = db_current ()
+                                            ^
+
+
+--- Defined Words ---
+EU4
+EU4_0
+EU4_0_5
+CONSOLE
+UNIX
+LINUX
+EUI
+-------------------

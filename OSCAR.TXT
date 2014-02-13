@@ -1,0 +1,48 @@
+euOSCAR 0.5
+Matt Arriola
+=============
+
+function AIM_login (sequence username, sequence password, integer auth_method = AUTH_MD5)
+    Logs in with the given user name and password. auth_method can be either
+    AUTH_MD5 or AUTH_CHANNEL1.
+    
+    Returns a socket.
+
+procedure message_loop (integer sock)
+    Processes incoming messages from the server
+
+procedure send_message (integer sock, sequence user, sequence msg, integer ack = 0)
+    Sends a plain-text IM. Set ack to 1 if you would like the library to confirm that the
+    IM was received, and if not, to resend it.
+
+Low-level routines
+===================
+
+procedure hook_SNAC (integer SNAC_family, integer SNAC_subfamily, integer id)
+    Hooks a SNAC to a callback function
+    
+    Example:   
+        hook_SNAC(4, 7, routine_id("get_message"))
+
+function make_FLAP (integer channel, atom sequence_ID, sequence data)
+    Builds a FLAP packet. Values passed for sequence_ID must be sequential or
+    the server will disconnect your program without warning, so use the global
+    variable current_seq when making your own FLAPs
+
+function make_SNAC (integer SNAC_family, integer SNAC_subfamily,
+                    integer flags, atom request_ID, sequence data)
+    Builds a SNAC. flags and request_ID, it seems, are rarely used and can be
+    safely set to zero.
+    
+    Example:
+        make_SNAC(1, 6, 0, 0, {})
+
+function make_TLV (integer TLV_type, sequence data)
+    Builds a TLV.
+    
+    Example:
+        make_TLV(#0F, "en")
+
+If you're interested in making changes to my library, mosey on over to http://iserverd.khstu.ru/oscar/ for an unofficial, but very detailed OSCAR specification.
+
+Many thanks to Tone Škoda for TSHtmPar.e

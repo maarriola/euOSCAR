@@ -1,0 +1,333 @@
+without warning
+include tcp4u.ew
+include wildcard.e
+include file.e
+
+-- FLAP format:
+-- 0x2A     FLAP ID
+-- xx       channel
+-- xx xx    sequence ID
+-- xx xx    data length
+--          data
+
+-- SNAC format:
+-- xx xx    family
+-- xx xx    subfamily
+-- xx xx    flags
+-- xx xx    request ID
+--          data
+
+-- TLV format:
+-- xx xx    TLV type
+-- xx xx    TLV length
+--          data
+
+sequence auth, proxy_addr, snac_log
+integer log_fn
+snac_log = {}
+auth = {"205.188.251.43"}
+proxy_addr = "127.0.0.1:5190"
+log_fn = -1
+
+procedure old_puts(integer fn, object dat)
+    puts(fn, dat)
+end procedure
+
+procedure old_printf(integer fn, sequence str, object dat)
+    printf(fn, str, dat)
+end procedure
+
+procedure puts(integer fn, object dat)
+    old_puts(fn, dat)
+    if fn = 1 and log_fn != -1 then
+	old_puts(log_fn, dat)
+    end if
+end procedure
+
+procedure printf(integer fn, sequence str, object dat)
+    old_printf(fn, str, dat)
+    if fn = 1 and log_fn != -1 then
+	old_printf(log_fn, str, dat)
+    end if
+end procedure
+
+function i16tobytes (integer i)
+    return floor(i / #100) & remainder(i, #100)
+end function
+
+function i32tobytes (integer i)
+    return {floor(floor(i / #10000) / #100),
+	    remainder(floor(i / #10000), #100),
+	    floor(remainder(i, #10000) / #100),
+	    remainder(remainder(i, #10000), #100)}
+end function
+
+function bytesto16 (sequence s)
+    return s[1] * #100 + s[2]
+end function
+
+function bytesto32 (sequence s)
+    return s[1] * #1000000 + s[2] * #10000 + s[3] * #100 + s[4]
+end function
+
+global function makeSNAC (integer seq, integer fam, integer sub, integer flag, atom req, sequence data)
+    sequence s
+    s = i16tobytes(fam) & i16tobytes(sub) & i16tobytes(flag) & i32tobytes(seq) & data
+    return s
+end function
+
+global function makeFLAP (integer chan, atom seq, sequence data)
+    integer len
+    len = length(data)
+    
+    return #2A & chan & i16tobytes(seq) & i16tobytes(len) & data
+end function
+
+global function makeTLV (integer typ, sequence str)
+    return i16tobytes(typ) & i16tobytes(length(str)) & str
+end function
+
+global function get_TLV (sequence pk, integer id)
+    for i = 1 to length(pk) do
+	if pk[i][1] = id then
+	    return pk[i][2]
+	end if
+    end for
+    
+    return -1
+end function
+
+function parse_TLVs (sequence pk)
+    integer i, x
+    sequence TLVs
+    
+    TLVs = {}
+    i = 1
+    while i <= length(pk) do
+	x = bytesto16(pk[i + 2..i + 3])
+	TLVs = append(TLVs, {bytesto16(pk[i..i + 1]), pk[i + 4..i + 3 + x]})
+	i += 4 + x
+    end while
+
+    return TLVs
+end function
+
+function parse_SNAC (sequence pk)
+    return {bytesto16(pk[1..2]), bytesto16(pk[3..4]), bytesto16(pk[5..6]),
+	    bytesto32(pk[7..10]), pk[11..$]}
+end function
+
+function parse_FLAP (sequence dat)
+    sequence flap
+    
+    if dat[1] != #2A then
+	return -1
+    else
+	flap = {dat[2], bytesto16(dat[3..4]), bytesto16(dat[5..6])}
+    end if
+
+    return flap
+end function
+
+function receive (integer sock, integer n_bytes, integer timeout)
+    sequence res, out
+    atom begin
+
+    begin = time()
+    out = {}
+    
+    while length(out) < n_bytes and time() < begin + timeout do
+	res = tcp4u_receive(sock, 1, 0)
+	if res[1] = TCP4U_SUCCESS then
+	    out &= res[2]
+	end if
+    end while
+
+    return out
+end function
+
+function parse_and_print(integer sock, integer other, sequence pk, sequence from)
+    object res
+    sequence raw
+    integer n
+
+    pk = parse_FLAP(pk)
+    if object(pk) and pk[3] then
+	printf(1, "%s: chan 0x%02x, length %d", {from, pk[1], pk[3]})
+	raw = receive(sock, pk[3], 30)
+	if pk[1] = 2 then
+	    pk[3] = parse_SNAC(raw)
+	    printf(1, ", SNAC(%02x, %02x)\n", {pk[3][1], pk[3][2]})
+	    snac_log = append(snac_log, pk[3] & {from})
+	else
+	    puts(1,'\n')
+	    pk[3] = raw
+	    --? raw
+	end if
+	--res = tcp4u_send(other, raw)
+    else
+	return -1
+    end if
+    
+    return {pk, raw}
+end function
+
+procedure proxy_loop(integer bos, integer cli)
+    sequence bos_pk, cli_pk, tmp
+    integer n, bn, cn
+    object pk, res
+    
+    bn = 0
+    cn = 0
+    bos_pk = {}
+    cli_pk = {}
+
+    while 1 do
+	if tcp4u_is_data_avail(bos) then
+	    res = tcp4u_receive(bos, 1, 0)
+	    if res[1] = TCP4U_SUCCESS then
+		bos_pk &= res[2]
+	    end if
+	end if
+
+	if tcp4u_is_data_avail(cli) then
+	    res = tcp4u_receive(cli, 1, 0)
+	    if res[1] = TCP4U_SOCKETCLOSED then
+		return
+	    elsif res[1] = TCP4U_SUCCESS then
+		cli_pk &= res[2]
+	    end if
+	end if
+	
+	if length(bos_pk) = 6 then
+	    bn += 1
+	    --res = tcp4u_send(cli, bos_pk)
+	    pk = parse_and_print(bos, cli, bos_pk, "SERVER")
+	    if sequence(pk) then
+		-- intercept the srv_cookie/auth_failed packet
+		-- this will be the second packet sent from the server
+		-- if using channel 1 authorization
+	    
+		if bn = 2 and pk[1][1] = 1 then
+		    pk[1][3] = parse_TLVs(pk[1][3])
+		    auth = {get_TLV(pk[1][3], 5),
+			    get_TLV(pk[1][3], 6),
+			    get_TLV(pk[1][3], 8)}
+
+		    if sequence(auth[3]) then
+			printf(1, "auth failed code 0x%04x\n", bytesto16(auth[3]))
+			res = tcp4u_send(cli, bos_pk & pk[2])
+		    else
+			tmp = makeTLV(5, proxy_addr) & makeTLV(6, auth[2])
+			bos_pk[5..6] = i16tobytes(length(tmp))
+		    
+			res = tcp4u_close(bos)
+			res = tcp4u_send(cli, bos_pk & tmp)
+		    end if
+		    return
+		-- intercept SNAC(17, 03)
+		elsif pk[1][1] = 2 and equal(pk[1][3][1..2], {#17, 3}) then
+		    pk[1][3][5] = parse_TLVs(pk[1][3][5])
+		    auth = {get_TLV(pk[1][3][5], 5),
+			    get_TLV(pk[1][3][5], 6),
+			    get_TLV(pk[1][3][5], 8)}
+		
+		    if sequence(auth[1]) and find(':', auth[1]) then
+			auth[1] = auth[1][1..find(':', auth[1]) - 1]
+		    end if
+		
+		    if sequence(auth[3]) then
+			printf(1, "auth failed (0x%04x)\n", bytesto16(auth[3]))
+			res = tcp4u_send(cli, bos_pk & pk[2])
+		    else
+			tmp = {}
+			for i = 1 to length(pk[1][3][5]) do
+			    if pk[1][3][5][i][1] != 5 then -- lol
+				tmp &= makeTLV(pk[1][3][5][i][1], pk[1][3][5][i][2])
+			    end if
+			end for
+		    
+			res = tcp4u_close(bos)
+			--res = tcp4u_send(cli, makeFLAP(1, pk[1][2],
+					    --makeSNAC(pk[1][2], #17, 3, 0, 0,
+						    --makeTLV(5, proxy_addr) & tmp)))
+		    
+			pk = makeSNAC(pk[1][2], #17, 3, 0, 0,
+			    makeTLV(5, proxy_addr) & tmp)
+			bos_pk[5..6] = i16tobytes(length(pk))
+			res = tcp4u_send(cli, bos_pk & pk)
+			res = tcp4u_close(cli)
+		    
+			puts(1, "auth done\n")
+		    end if
+		    return
+		else
+		    res = tcp4u_send(cli, bos_pk & pk[2])
+		end if
+	    end if
+	    bos_pk = {}
+	end if
+	
+	if length(cli_pk) = 6 then
+	    cn += 1
+	    res = tcp4u_send(bos, cli_pk)
+	    pk = parse_and_print(cli, bos, cli_pk, "CLIENT")
+	    if sequence(pk) then res = tcp4u_send(bos, pk[2]) end if
+	    cli_pk = {}
+	    
+	    if sequence(pk) then
+		if pk[1][1] = 2 and equal(pk[1][3][1..2], {1, #17}) then
+		    for i = 1 to length(pk[2]) do
+			printf(1, "%02x ", pk[2][i])
+		    end for
+		    puts(1, '\n')
+		elsif pk[1][1] = 2 and equal(pk[1][3][1..2], {1, 2}) then
+		    for i = 1 to length(snac_log) do
+			printf(1, "SNAC(%02x, %02x) from %s:\n", {snac_log[i][1], snac_log[i][2], snac_log[i][6]})
+			for j = 1 to length(snac_log[i][5]) do
+			    printf(1, "%02x ", snac_log[i][5][j])
+			end for
+			puts(1, '\n')
+		    end for
+		end if
+	    end if
+	end if
+    end while
+end procedure
+
+sequence res
+integer sock, cli, bos
+
+if tcp4u_init() != TCP4U_SUCCESS then
+    puts(1, "tcp4u_init error\n")
+    abort(1)
+end if
+
+res = tcp4u_get_listen_socket(0, 5190, 0)
+if res[1] != TCP4U_SUCCESS then
+    abort(1)
+end if
+
+sock = res[2]
+
+log_fn = open("proxy.log", "w")
+
+puts(1, "waiting\n")
+while 1 do
+    res = tcp4u_accept(sock, 120)
+    if res[1] = TCP4U_SUCCESS then
+	printf(1, "connecting to %s...", {auth[1]})
+	cli = res[2]
+--      res = tcp4u_connect("64.12.25.68", 0, 5190)
+	res = tcp4u_connect(auth[1], 0, 5190)
+	if res[1] != TCP4U_SUCCESS then
+	    puts(1, "failed\n")
+	else
+	    puts(1, "ok\n")
+	    proxy_loop(res[2], cli)
+	end if
+    end if
+end while
+
+res = tcp4u_close(sock)
+close(log_fn)
